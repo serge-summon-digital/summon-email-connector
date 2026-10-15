@@ -1,0 +1,23 @@
+{
+  "name": "summon-email-connector",
+  "version": "1.0.0",
+  "description": "MCP server that lets Claude read, search and draft replies in your own IONOS mailbox. It never sends, moves or deletes mail.",
+  "type": "module",
+  "main": "server.js",
+  "bin": {
+    "summon-email-connector": "server.js"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "imapflow": "^1.4.3",
+    "mailparser": "^3.9.12",
+    "nodemailer": "^9.1.1",
+    "zod": "^4.6.7"
+  }
+}
