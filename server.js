@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Summon email MCP server (stdio).
 //
-// Gives Claude read/search access to ONE IONOS mailbox and lets it save replies as drafts.
-// It cannot send, move, delete or flag mail: the person reviews and sends drafts in IONOS webmail.
+// Gives Claude read/search access to ONE IONOS mailbox, lets it save replies as drafts, move mail
+// between folders and create/rename folders. It cannot send, delete or flag mail, and cannot move
+// mail into Trash: the person reviews and sends drafts in IONOS webmail.
 // Each team member runs their own copy with their own address and IONOS app password, so nobody's
 // Claude can reach anyone else's inbox. Setup: README.md.
 //
@@ -117,7 +118,18 @@ async function findDraftsFolder(client) {
   return drafts.path;
 }
 
-const server = new McpServer({ name: "summon-email", version: "1.0.0" });
+// Resolves a folder path against the server's list (case-insensitive) so typos fail loudly
+// instead of creating or touching the wrong mailbox.
+async function findFolder(client, path) {
+  const folders = await client.list();
+  const folder = folders.find((f) => f.path === path) || folders.find((f) => f.path.toLowerCase() === path.toLowerCase());
+  if (!folder) throw new Error(`No folder named "${path}". Use list_folders for exact names.`);
+  return folder;
+}
+
+const isProtectedFolder = (folder) => folder.path.toUpperCase() === "INBOX" || Boolean(folder.specialUse);
+
+const server = new McpServer({ name: "summon-email", version: "1.1.0" });
 const readOnly = { readOnlyHint: true, destructiveHint: false, openWorldHint: true };
 const folderArg = z.string().default("INBOX").describe("Mailbox folder path, e.g. INBOX or Sent. Use list_folders for exact names.");
 const limitArg = z.number().int().min(1).max(100).default(20).describe("Maximum emails to return, newest first.");
@@ -289,6 +301,83 @@ server.registerTool(
         subject: mail.subject,
         next_step: "Open IONOS webmail > Drafts to review and send."
       };
+    })
+  )
+);
+
+server.registerTool(
+  "move_emails",
+  {
+    title: "Move emails to another folder",
+    description: `Move emails (by UID from list_emails/search_emails) from one folder of ${EMAIL_ADDRESS}'s mailbox to another, e.g. INBOX to Tidied/Newsletters or Spam back to INBOX. Does not change read/unread status. Moving into Trash is not allowed. UIDs change after a move; the result maps old UIDs to new ones.`,
+    inputSchema: {
+      uids: z.array(z.number().int().positive()).min(1).max(500).describe("UIDs of the emails to move, all from the same source folder."),
+      from_folder: folderArg.describe("Folder the emails are in now."),
+      to_folder: z.string().min(1).describe("Destination folder path. Must already exist; use create_folder first if needed.")
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }
+  },
+  safely(({ uids, from_folder, to_folder }) =>
+    withImap(async (client) => {
+      const source = await findFolder(client, from_folder);
+      const destination = await findFolder(client, to_folder);
+      if (destination.specialUse === "\\Trash") throw new Error("Moving mail into Trash is not allowed by this connector.");
+      if (source.path === destination.path) throw new Error("Source and destination are the same folder.");
+      const lock = await client.getMailboxLock(source.path);
+      try {
+        const found = (await client.search({ uid: uids.join(",") }, { uid: true })) || [];
+        const missing = uids.filter((uid) => !found.includes(uid));
+        if (!found.length) throw new Error(`None of those UIDs are in ${source.path}.`);
+        const result = await client.messageMove(found.join(","), destination.path, { uid: true });
+        return {
+          moved: found.length,
+          from_folder: source.path,
+          to_folder: destination.path,
+          not_found: missing,
+          new_uids: result?.uidMap ? Object.fromEntries(result.uidMap) : null
+        };
+      } finally {
+        lock.release();
+      }
+    })
+  )
+);
+
+server.registerTool(
+  "create_folder",
+  {
+    title: "Create a folder",
+    description: `Create a folder in ${EMAIL_ADDRESS}'s mailbox. Use "/" for subfolders, e.g. "Tidied/Last tidy 2026-10-16". Does nothing if it already exists.`,
+    inputSchema: {
+      path: z.string().min(1).describe("Full path of the new folder.")
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+  },
+  safely(({ path }) =>
+    withImap(async (client) => {
+      const result = await client.mailboxCreate(path);
+      return { path: result.path, created: Boolean(result.created) };
+    })
+  )
+);
+
+server.registerTool(
+  "rename_folder",
+  {
+    title: "Rename a folder",
+    description: `Rename (or move) a folder in ${EMAIL_ADDRESS}'s mailbox, keeping all its emails, e.g. "Tidied/Last tidy 2026-10-15" to "Tidied/Last tidy 2026-10-16". INBOX and system folders (Sent, Drafts, Spam, Trash, Archive) cannot be renamed.`,
+    inputSchema: {
+      from_path: z.string().min(1).describe("Current folder path."),
+      to_path: z.string().min(1).describe("New folder path.")
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }
+  },
+  safely(({ from_path, to_path }) =>
+    withImap(async (client) => {
+      const folder = await findFolder(client, from_path);
+      if (isProtectedFolder(folder)) throw new Error(`"${folder.path}" is a system folder and cannot be renamed.`);
+      const result = await client.mailboxRename(folder.path, to_path);
+      return { renamed: true, from_path: result.path, to_path: result.newPath };
     })
   )
 );

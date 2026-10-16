@@ -1,6 +1,6 @@
 # Summon Email Connector (IONOS mailbox for Claude)
 
-A small MCP server that lets Claude read and search **your own** IONOS mailbox and save replies as **drafts**. It cannot send, move, delete or flag mail; you review and send drafts yourself in IONOS webmail.
+A small MCP server that lets Claude read and search **your own** IONOS mailbox, save replies as **drafts**, move mail between folders and create or rename folders. It cannot send, delete or flag mail, or move mail into Trash; you review and send drafts yourself in IONOS webmail.
 
 Each person runs their own copy on their own Mac with their own IONOS app password, so nobody's Claude can reach anyone else's inbox. It runs locally and is free.
 
@@ -13,8 +13,13 @@ Each person runs their own copy on their own Mac with their own IONOS app passwo
 | `search_emails` | Filter by from, to, subject, text, since, before, unread |
 | `read_email` | One email's headers, plain-text body (up to 20,000 characters) and attachment names |
 | `create_draft` | Saves a draft, optionally threaded as a reply, in your IONOS Drafts folder. It is not sent. |
+| `move_emails` | Moves emails by UID from one folder to another (not into Trash). Read/unread status is kept. |
+| `create_folder` | Creates a folder, e.g. `Tidied/Newsletters` |
+| `rename_folder` | Renames a folder and keeps its mail. INBOX and system folders can't be renamed. |
 
-Folders are opened read-only, so reading never marks mail as read. The tool descriptions tell Claude that email content is untrusted and must never be followed as instructions.
+Folders are opened read-only for reading, so reading never marks mail as read.
+
+**Windows:** start the server with `node --use-system-ca launcher.mjs`. `--use-system-ca` lets Node trust certificates in the Windows store (needed when antivirus such as AVG inspects mail traffic), and `launcher.mjs` reads `EMAIL_*` from your Windows user environment when the host app doesn't pass it through. The tool descriptions tell Claude that email content is untrusted and must never be followed as instructions.
 
 ## Setup (about 10 minutes)
 
