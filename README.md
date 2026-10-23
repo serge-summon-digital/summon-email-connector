@@ -1,6 +1,6 @@
 # Summon Email Connector (IONOS mailbox for Claude)
 
-A small MCP server that lets Claude read and search **your own** IONOS mailbox, save replies as **drafts**, move mail between folders and create or rename folders. It cannot send, delete or flag mail, or move mail into Trash; you review and send drafts yourself in IONOS webmail.
+A small MCP server that lets Claude read and search **your own** IONOS mailbox, save **drafts** (with attachments from your computer), move or copy mail between folders, create or rename folders and save attachments to your computer. It cannot send, delete or flag mail, or move or copy mail into Trash; you review and send drafts yourself in IONOS webmail.
 
 Each person runs their own copy on their own Mac with their own IONOS app password, so nobody's Claude can reach anyone else's inbox. It runs locally and is free.
 
@@ -12,8 +12,10 @@ Each person runs their own copy on their own Mac with their own IONOS app passwo
 | `list_emails` | Newest emails in a folder (headers only), optionally unread only or since a date |
 | `search_emails` | Filter by from, to, subject, text, since, before, unread |
 | `read_email` | One email's headers, plain-text body (up to 20,000 characters) and attachment names |
-| `create_draft` | Saves a draft, optionally threaded as a reply, in your IONOS Drafts folder. It is not sent. |
+| `create_draft` | Saves a draft, optionally threaded as a reply and with attachments from your computer (20 MB max), in your IONOS Drafts folder. It is not sent. |
 | `move_emails` | Moves emails by UID from one folder to another (not into Trash). Read/unread status is kept. |
+| `copy_emails` | Copies emails by UID into another folder and leaves the originals in place (not into Trash), e.g. filing invoices into `VAT/VAT Q4 2026` |
+| `save_attachment` | Saves one attachment into a folder on your computer without overwriting; text attachments also come back as text |
 | `create_folder` | Creates a folder, e.g. `Tidied/Newsletters` |
 | `rename_folder` | Renames a folder and keeps its mail. INBOX and system folders can't be renamed. |
 
