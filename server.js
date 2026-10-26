@@ -8,7 +8,8 @@
 // Each team member runs their own copy with their own address and IONOS app password, so nobody's
 // Claude can reach anyone else's inbox. Setup: README.md.
 //
-// Env: EMAIL_ADDRESS, EMAIL_PASSWORD (required); EMAIL_DISPLAY_NAME, IMAP_HOST, IMAP_PORT (optional).
+// Env: EMAIL_ADDRESS, EMAIL_PASSWORD (required); EMAIL_DISPLAY_NAME, EMAIL_SIGNATURE_HTML, IMAP_HOST,
+// IMAP_PORT (optional).
 // Configuration comes only from these environment variables; this process runs per person.
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -17,13 +18,14 @@ import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import MailComposer from "nodemailer/lib/mail-composer/index.js";
 import { z } from "zod";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const EMAIL_ADDRESS = process.env.EMAIL_ADDRESS || "";
 const EMAIL_PASSWORD = process.env.EMAIL_PASSWORD || "";
 const EMAIL_DISPLAY_NAME = process.env.EMAIL_DISPLAY_NAME || "";
+const EMAIL_SIGNATURE_HTML = process.env.EMAIL_SIGNATURE_HTML || "";
 const IMAP_HOST = process.env.IMAP_HOST || "imap.ionos.co.uk";
 const IMAP_PORT = Number(process.env.IMAP_PORT || 993);
 const MAX_BODY_CHARS = 20000;
@@ -152,8 +154,96 @@ function freePath(dir, filename) {
 }
 
 const TEXT_TYPES = /^(text\/|application\/(json|xml|csv))/i;
+const MAX_HTML_CHARS = 100000;
 
-const server = new McpServer({ name: "summon-email", version: "1.2.0" });
+const escapeHtml = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+// Blank lines separate paragraphs; single line breaks stay as line breaks.
+const textToHtml = (text) =>
+  text
+    .trim()
+    .split(/\n\s*\n/)
+    .map((p) => `<p style="margin:0 0 12px">${escapeHtml(p).replace(/\r?\n/g, "<br>")}</p>`)
+    .join("\n");
+
+const htmlToText = (html) =>
+  html
+    .replace(/<(style|head)[\s\S]*?<\/\1>/gi, "")
+    .replace(/<br\s*\/?>|<\/(p|div|tr|h\d|li)>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&reg;/g, "®")
+    .replace(/&copy;/g, "©")
+    .replace(/&pound;/g, "£")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+    .replace(/&amp;/g, "&")
+    .replace(/[ \t]+/g, " ")
+    .replace(/ *\n */g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+const bodyInner = (html) => (html.match(/<body[^>]*>([\s\S]*)<\/body>/i)?.[1] ?? html);
+
+// Optional per-person HTML signature file. Images it references by relative path are embedded
+// inline (cid) so the signature looks the same in every mail client. Read on each draft so edits
+// to the file apply without restarting.
+function loadSignature() {
+  if (!EMAIL_SIGNATURE_HTML) return null;
+  if (!existsSync(EMAIL_SIGNATURE_HTML)) throw new Error(`EMAIL_SIGNATURE_HTML points to a missing file: ${EMAIL_SIGNATURE_HTML}`);
+  const dir = path.dirname(EMAIL_SIGNATURE_HTML);
+  const images = [];
+  const html = bodyInner(readFileSync(EMAIL_SIGNATURE_HTML, "utf8")).replace(/(<img\b[^>]*?\bsrc=["'])([^"']+)(["'])/gi, (all, before, src, after) => {
+    if (/^(https?:|data:|cid:)/i.test(src)) return all;
+    const file = path.resolve(dir, decodeURIComponent(src));
+    if (!existsSync(file)) throw new Error(`Signature image not found: ${file}`);
+    const cid = `signature-${images.length}@summon-email`;
+    images.push({ path: file, filename: path.basename(file), cid, contentDisposition: "inline" });
+    return `${before}cid:${cid}${after}`;
+  });
+  return { html, text: htmlToText(html), images };
+}
+
+// "07 October 2026 14:54", as Outlook writes it.
+const formatSent = (date) => {
+  if (!date) return "";
+  const part = (options) => date.toLocaleString("en-GB", { ...options, timeZone: "Europe/London" });
+  return `${part({ day: "2-digit", month: "long", year: "numeric" })} ${part({ hour: "2-digit", minute: "2-digit" })}`;
+};
+
+// Outlook wraps display names in single quotes ('Reeva KINGSTON'); drop them when quoting.
+const quotedAddresses = (field) =>
+  (field?.value || []).map((a) => (a.name ? `${a.name.replace(/^'(.*)'$/, "$1")} <${a.address}>` : a.address)).join("; ");
+
+// The original email under a reply, laid out the way Outlook quotes it. Its inline images
+// (logos in the original signature) are carried over so they still show.
+function quoteOriginal(parsed) {
+  const rows = [
+    ["From", quotedAddresses(parsed.from)],
+    ["Sent", formatSent(parsed.date)],
+    ["To", quotedAddresses(parsed.to)],
+    ["Cc", quotedAddresses(parsed.cc)],
+    ["Subject", parsed.subject]
+  ].filter(([, value]) => value);
+  const headerHtml = rows.map(([label, value]) => `<b>${label}:</b> ${escapeHtml(value)}`).join("<br>");
+  const headerText = rows.map(([label, value]) => `${label}: ${value}`).join("\n");
+  // Keep the original's own <style> rules (Outlook's paragraph spacing lives there).
+  const styles = parsed.html ? (parsed.html.match(/<style[\s\S]*?<\/style>/gi) || []).join("\n") : "";
+  const originalHtml = parsed.html ? `${styles}\n${bodyInner(parsed.html)}` : textToHtml(parsed.text || "");
+  const images = (parsed.attachments || [])
+    .filter((a) => a.cid && a.contentDisposition === "inline")
+    .map((a) => ({ content: a.content, filename: a.filename, contentType: a.contentType, cid: a.cid, contentDisposition: "inline" }));
+  return {
+    html: `<div style="border:none;border-top:solid #E1E1E1 1.0pt;padding:3.0pt 0 0 0;margin-top:16px"><p style="margin:0 0 12px">${headerHtml}</p></div>\n${originalHtml}`,
+    text: `${headerText}\n\n${parsed.text || htmlToText(parsed.html || "")}`,
+    images
+  };
+}
+
+const server = new McpServer({ name: "summon-email", version: "1.3.0" });
 const readOnly = { readOnlyHint: true, destructiveHint: false, openWorldHint: true };
 const folderArg = z.string().default("INBOX").describe("Mailbox folder path, e.g. INBOX or Sent. Use list_folders for exact names.");
 const limitArg = z.number().int().min(1).max(100).default(20).describe("Maximum emails to return, newest first.");
@@ -238,11 +328,12 @@ server.registerTool(
     description: `Read one email (by UID from list_emails/search_emails) from ${EMAIL_ADDRESS}'s mailbox: headers, plain-text body and attachment names. Does not mark it as read. ${UNTRUSTED_NOTE}`,
     inputSchema: {
       uid: z.number().int().positive().describe("Email UID."),
-      folder: folderArg
+      folder: folderArg,
+      include_html: z.boolean().default(false).describe("Also return the raw HTML body, e.g. to copy a signature's layout.")
     },
     annotations: readOnly
   },
-  safely(({ uid, folder }) =>
+  safely(({ uid, folder, include_html }) =>
     withImap((client) =>
       withFolder(client, folder, async () => {
         const message = await client.fetchOne(String(uid), { uid: true, source: true, flags: true }, { uid: true });
@@ -263,7 +354,11 @@ server.registerTool(
           unread: !message.flags?.has("\\Seen"),
           body,
           body_truncated: truncated,
-          attachments: (parsed.attachments || []).map((a) => ({ filename: a.filename || "(unnamed)", content_type: a.contentType, size_bytes: a.size }))
+          attachments: (parsed.attachments || []).map((a) => ({ filename: a.filename || "(unnamed)", content_type: a.contentType, size_bytes: a.size })),
+          ...(include_html && {
+            html: parsed.html ? parsed.html.slice(0, MAX_HTML_CHARS) : null,
+            html_truncated: Boolean(parsed.html && parsed.html.length > MAX_HTML_CHARS)
+          })
         };
       })
     )
@@ -274,37 +369,53 @@ server.registerTool(
   "create_draft",
   {
     title: "Save a draft email",
-    description: `Save an email as a DRAFT in ${EMAIL_ADDRESS}'s IONOS Drafts folder. It is NOT sent: the person opens IONOS webmail, reviews and sends it themselves. To reply in-thread, pass reply_to_uid. To attach files, pass their absolute paths on this computer. Show the person the draft text before saving it.`,
+    description: `Save an email as a DRAFT in ${EMAIL_ADDRESS}'s IONOS Drafts folder. It is NOT sent: the person opens IONOS webmail, reviews and sends it themselves. It is saved as a formatted (HTML) email with the person's signature added underneath (when EMAIL_SIGNATURE_HTML is set), so leave the signature out of body. To reply in-thread, pass reply_to_uid; the original email is quoted below the reply. To attach files, pass their absolute paths on this computer. Show the person the draft text before saving it.`,
     inputSchema: {
       to: z.string().min(3).describe("Recipient address(es), comma-separated."),
       cc: z.string().optional().describe("CC address(es), comma-separated."),
       subject: z.string().optional().describe("Subject. Defaults to 'Re: <original subject>' when replying."),
-      body: z.string().min(1).describe("Plain-text body."),
+      body: z.string().min(1).describe("Message text without the signature. Blank lines separate paragraphs."),
       attachments: z.array(z.string().min(1)).max(20).optional().describe("Absolute paths of files on this computer to attach, e.g. C:\\Users\\me\\Documents\\Invoice 123.pdf. 20 MB in total at most."),
       reply_to_uid: z.number().int().positive().optional().describe("UID of the email being replied to, for threading."),
-      reply_to_folder: folderArg
+      reply_to_folder: folderArg,
+      signature: z.boolean().default(true).describe("Add the person's signature under the body. Set false for internal one-liners."),
+      quote_original: z.boolean().default(true).describe("When replying, include the original email below, as mail clients do.")
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }
   },
-  safely(({ to, cc, subject, body, attachments = [], reply_to_uid, reply_to_folder }) =>
+  safely(({ to, cc, subject, body, attachments = [], reply_to_uid, reply_to_folder, signature, quote_original }) =>
     withImap(async (client) => {
       const files = attachments.map(localFile);
       const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
       if (totalBytes > MAX_ATTACHMENT_BYTES) throw new Error(`Attachments total ${(totalBytes / 1048576).toFixed(1)} MB; the limit is 20 MB.`);
+      const sig = signature ? loadSignature() : null;
+      const htmlParts = [textToHtml(body)];
+      const textParts = [body.trim()];
+      const inlineImages = [];
+      if (sig) {
+        htmlParts.push(sig.html);
+        textParts.push(sig.text);
+        inlineImages.push(...sig.images);
+      }
       const mail = {
         from: EMAIL_DISPLAY_NAME ? { name: EMAIL_DISPLAY_NAME, address: EMAIL_ADDRESS } : EMAIL_ADDRESS,
         to,
         cc: cc || undefined,
         subject,
-        text: body,
         attachments: files.map((f) => ({ path: f.path, filename: f.filename })),
         date: new Date()
       };
       if (reply_to_uid) {
         const original = await withFolder(client, reply_to_folder, () =>
-          client.fetchOne(String(reply_to_uid), { uid: true, envelope: true, headers: ["references"] }, { uid: true })
+          client.fetchOne(String(reply_to_uid), { uid: true, envelope: true, headers: ["references"], source: quote_original }, { uid: true })
         );
         if (!original?.envelope) throw new Error(`No email with UID ${reply_to_uid} in ${reply_to_folder}.`);
+        if (quote_original && original.source) {
+          const quoted = quoteOriginal(await simpleParser(original.source));
+          htmlParts.push(quoted.html);
+          textParts.push(quoted.text);
+          inlineImages.push(...quoted.images);
+        }
         const messageId = original.envelope.messageId;
         const references = original.headers?.toString().replace(/^references:\s*/i, "").replace(/\s+/g, " ").trim() || "";
         if (messageId) {
@@ -317,6 +428,9 @@ server.registerTool(
         }
       }
       if (!mail.subject) mail.subject = "(no subject)";
+      mail.text = textParts.join("\n\n");
+      mail.html = `<div style="font-family:Arial,sans-serif;font-size:11pt">\n${htmlParts.join("\n")}\n</div>`;
+      mail.attachments.push(...inlineImages);
       const raw = await new MailComposer(mail).compile().build();
       const draftsFolder = await findDraftsFolder(client);
       const result = await client.append(draftsFolder, raw, ["\\Draft", "\\Seen"]);
@@ -329,6 +443,8 @@ server.registerTool(
         cc: cc || "",
         subject: mail.subject,
         attachments: files.map((f) => ({ filename: f.filename, size_bytes: f.size })),
+        signature: sig ? "added" : signature ? "none set (EMAIL_SIGNATURE_HTML)" : "left out",
+        quoted_original: Boolean(reply_to_uid && quote_original),
         next_step: "Open IONOS webmail > Drafts to review and send."
       };
     })

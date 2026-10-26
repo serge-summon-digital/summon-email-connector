@@ -11,8 +11,8 @@ Each person runs their own copy on their own Mac with their own IONOS app passwo
 | `list_folders` | Folders with message and unread counts |
 | `list_emails` | Newest emails in a folder (headers only), optionally unread only or since a date |
 | `search_emails` | Filter by from, to, subject, text, since, before, unread |
-| `read_email` | One email's headers, plain-text body (up to 20,000 characters) and attachment names |
-| `create_draft` | Saves a draft, optionally threaded as a reply and with attachments from your computer (20 MB max), in your IONOS Drafts folder. It is not sent. |
+| `read_email` | One email's headers, plain-text body (up to 20,000 characters) and attachment names; optionally the raw HTML |
+| `create_draft` | Saves a formatted (HTML) draft with your signature, optionally threaded as a reply with the original quoted underneath and with attachments from your computer (20 MB max), in your IONOS Drafts folder. It is not sent. |
 | `move_emails` | Moves emails by UID from one folder to another (not into Trash). Read/unread status is kept. |
 | `copy_emails` | Copies emails by UID into another folder and leaves the originals in place (not into Trash), e.g. filing invoices into `VAT/VAT Q4 2026` |
 | `save_attachment` | Saves one attachment into a folder on your computer without overwriting; text attachments also come back as text |
@@ -94,6 +94,17 @@ claude mcp add summon-email --scope user --env EMAIL_ADDRESS=you@summon.co --env
 ### 4. Test it
 
 Start a new Claude chat and ask: **"list my unread emails from today"**.
+
+### 5. Add your signature (optional)
+
+Drafts get your email signature underneath, the same as Outlook adds it, when `EMAIL_SIGNATURE_HTML` points to an HTML file of your signature.
+
+1. Make a folder outside this repo, for example `~/.summon-email/signature/`.
+2. Save your signature there as `signature.html`, with any images (logo) as files next to it, referenced by file name, e.g. `<img src="logo.png">`. The connector embeds them in each draft, so they show in every mail client. To copy your current Outlook signature, ask Claude to read one of your sent emails with `include_html` and save the signature part.
+3. Set the variable to the file's full path: add `--env EMAIL_SIGNATURE_HTML=/Users/you/.summon-email/signature/signature.html` to the `claude mcp add` command, add it to the `env` block in the Desktop config, or on Windows run `setx EMAIL_SIGNATURE_HTML "C:\Users\you\.summon-email\signature\signature.html"`.
+4. Restart Claude.
+
+Changes to the signature file apply to the next draft without a restart. Pass `signature: false` to leave it off a draft.
 
 ## Troubleshooting
 

@@ -2,7 +2,7 @@
 // when the host app launches the server with a filtered environment, then starts server.js.
 import { execFileSync } from "node:child_process";
 
-const NAMES = ["EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_DISPLAY_NAME", "IMAP_HOST", "IMAP_PORT"];
+const NAMES = ["EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_DISPLAY_NAME", "EMAIL_SIGNATURE_HTML", "IMAP_HOST", "IMAP_PORT"];
 
 if (process.platform === "win32") {
   for (const name of NAMES) {
